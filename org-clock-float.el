@@ -1,4 +1,5 @@
-;; Hello World
+;;; ...  -*- lexical-binding: t -*-
+;; Send clocked times to float.com
 (require 'request)
 (require 'json)
 (require 'org-clock)
@@ -95,6 +96,8 @@
 (defun float-get-project (project_name &optional headers)
   "Get information about a project based on it's name."
   (let ((projects (float-get-projects)))
+	;; TODO: This errors if there isn't a matching float tag on a task i.e. if there's nothing to be passed to the elt
+	;; elt: Wrong type argument: stringp, nil
     (elt (cl-remove-if-not (lambda (prj) (equal (cdr (assoc 'name prj)) project_name)) projects) 0)
     )
   )
@@ -102,8 +105,6 @@
 (defun org-clock-float-post-task ()
   "clock out post the clock to Float."
   (interactive)
-  ;; TODO: This errors if there isn't a matching float tag on a task,
-  ;; presumably because it always tries to resolve the name to an id
   (let* ((tags (org-get-tags))
          (title (org-entry-get nil "ITEM"))
          (clocked-time (org-clock-float--get-last-clock-duration))
