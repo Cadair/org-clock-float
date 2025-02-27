@@ -17,6 +17,10 @@ You might want to use [[https://www.gnu.org/software/emacs/manual/html_node/auth
   )
 #+end_src
 
+You might want to use [[https://www.gnu.org/software/emacs/manual/html_node/auth/index.html][auth-source]] to store the token, in which case you can use something like this:
+#+begin_src emacs-lisp
+(org-clock-float-api-token (auth-info-password (nth 0 (auth-source-search :max 1 :host "api.float.com"))))
+#+end_src
 ** Tagging Tasks
 
 Only tasks tagged with a matching tag are uploaded to float. The format of the tag is ~float_<project name>~, so if you have a project in float named "client1" you would have a task which looks like this:
