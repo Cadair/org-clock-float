@@ -1,0 +1,25 @@
+* Org Clock Float
+
+This is a small emacs package which sends my clocked time up to [[float.com][float.com]] a time tracking and scheduling web service.
+
+** Configuration
+
+To configure upload to float you need to set your email and an API token, unfortunately the Float API only appears to be team-wide, so you need the token from the Account Owner: https://support.float.com/en/articles/55483-api
+You might want to use [[https://www.gnu.org/software/emacs/manual/html_node/auth/index.html][auth-source]] to store the token.
+#+begin_src emacs-lisp
+(use-package org-clock-float
+  :custom
+  (org-clock-float-email "youremail@example.com")
+  (org-clock-float-api-token "aslkdjaslkjdlakjdlksa")
+  )
+#+end_src
+
+** Tagging Tasks
+
+Only tasks tagged with a matching tag are uploaded to float. The format of the tag is ~float_<project name>~, so if you have a project in float named "client1" you would have a task which looks like this:
+
+#+begin_src org
+  * TODO Work on thing :float_client1:
+#+end_src
+
+Then on clock out the amount of time on the active clock will be uploaded to float.
