@@ -6,7 +6,7 @@
 ;; Author: Stuart Mumford <stuart@cadair.com>
 ;; Keywords: org, clocking, float
 ;; Version: 1.0
-;; Package-Requires: ((emacs "26.1") (request "0.3.2")
+;; Package-Requires: ((emacs "26.1") (request "0.3.2"))
 ;; URL: https://github.com/Cadair/org-clock-float/
 
 ;; This program is free software; you can redistribute it and/or modify
