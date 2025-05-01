@@ -72,7 +72,7 @@
   (add-to-list 'headers `("Content-Type" . "application/json"))
   (add-to-list 'headers `("Accept" . "application/json"))
   (add-to-list 'headers org-clock-float-api-auth-header)
-  ;; (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
+  (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
   (request
     url
     :type "POST"
@@ -82,53 +82,72 @@
     )
   )
 
+
+(defvar float--people-cache nil "Cache for storing people data as an alist.")
+
+
 (defun float-get-people (&optional headers)
-  "Get all people from the Float API."
+  "Get all people from the Float API and return as an alist."
   (add-to-list 'headers org-clock-float-api-auth-header)
-  ;; (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
-  (request-response-data
-   (request
-     (concat org-clock-float-api-base-url "people")
-     :type "GET"
-     :sync t
-     :parser 'json-read
-     :headers headers
-     )
-   )
-  )
+  (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
+  (let ((response (request-response-data
+                   (request
+                    (concat org-clock-float-api-base-url "people")
+                    :type "GET"
+                    :sync t
+                    :parser 'json-read
+                    :headers headers))))
+    ;; Convert JSON response to alist
+    (mapcar (lambda (person)
+              (cons (cdr (assoc 'email person)) person))
+            response)))
+
 
 (defun float-get-person (email &optional headers)
-  "Get information about a person based on their email."
-  (let* ((people (float-get-people headers))
-         (person (elt (cl-remove-if-not (lambda (row) (equal (cdr (assoc 'email row)) email)) people) 0)))
-    person
-    )
-  )
+  "Get information about a person based on their email, using cached data."
+  (if (and float--people-cache
+           (assoc email float--people-cache))
+      ;; Return cached person if available
+      (assoc email float--people-cache)
+    ;; Fetch and cache people if not available
+    (setq float--people-cache (float-get-people headers))
+    (assoc email float--people-cache)))
+
+
+(defvar float--projects-cache nil "Cache for storing projects data as an alist.")
 
 
 (defun float-get-projects (&optional headers)
-  "Get all projects from the Float API"
+  "Get all projects from the Float API and return as an alist, with caching."
+  ;; Fetch data from API if cache is empty
   (add-to-list 'headers org-clock-float-api-auth-header)
-  ;; (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
-  (request-response-data
-   (request
-     (concat org-clock-float-api-base-url "projects")
-     :type "GET"
-     :sync t
-     :parser 'json-read
-     :headers headers
-     )
-   )
-  )
+  (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
+  (let ((response (request-response-data
+				   (request
+					 (concat org-clock-float-api-base-url "projects")
+					 :type "GET"
+					 :sync t
+					 :parser 'json-read
+					 :headers headers))))
+	;; Convert JSON response to alist
+	(let ((alist (mapcar (lambda (project)
+						   (cons (cdr (assoc 'name project)) project))
+						 response)))
+	  ;; Cache the alist
+	  (setq float--projects-cache alist)
+	  alist)))
+
 
 (defun float-get-project (project_name &optional headers)
-  "Get information about a project based on it's name."
-  (let ((projects (float-get-projects)))
-	;; TODO: This errors if there isn't a matching float tag on a task i.e. if there's nothing to be passed to the elt
-	;; elt: Wrong type argument: stringp, nil
-    (elt (cl-remove-if-not (lambda (prj) (equal (cdr (assoc 'name prj)) project_name)) projects) 0)
-    )
-  )
+  "Get information about a project based on its name, using cached data."
+  (if (and float--projects-cache
+           (assoc project_name float--projects-cache))
+      ;; Return cached project if available
+      (assoc project_name float--projects-cache)
+    ;; Fetch and cache projects if not available
+    (setq float--projects-cache (float-get-projects headers))
+    (assoc project_name float--projects-cache)))
+
 
 (defun org-clock-float-post-task ()
   "clock out post the clock to Float."
