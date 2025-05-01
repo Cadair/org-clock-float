@@ -5,7 +5,6 @@ This is a small emacs package which sends my clocked time up to [[float.com][flo
 ** Configuration
 
 To configure upload to float you need to set your email and an API token, unfortunately the Float API only appears to be team-wide, so you need the token from the Account Owner: https://support.float.com/en/articles/55483-api
-You might want to use [[https://www.gnu.org/software/emacs/manual/html_node/auth/index.html][auth-source]] to store the token.
 #+begin_src emacs-lisp
 (use-package request)
 (use-package org-clock-float
