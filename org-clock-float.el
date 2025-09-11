@@ -31,6 +31,7 @@
 (require 'request)
 (require 'json)
 (require 'org-clock)
+(require 'cl-lib)
 
 (defgroup org-clock-float nil
   "Send clock time to Float on clockout"
@@ -57,6 +58,15 @@
   :type 'list
   :group 'org-clock-float)
 
+(defun org-clock-float--build-headers (&optional extra-headers)
+  "Construct default headers merged with EXTRA-HEADERS without mutating inputs."
+  (let* ((base (list (cons "Content-Type" "application/json")
+                     (cons "Accept" "application/json")
+                     (cons "User-Agent" (concat "Emacs " org-clock-float-email))
+                     (cons (car org-clock-float-api-auth-header)
+                           (concat "Bearer " org-clock-float-api-token)))))
+    (append base extra-headers)))
+
 ;; Float Integration
 (defun org-clock-float--get-last-clock-duration ()
   "Get the last clock entry for the current task."
@@ -68,110 +78,157 @@
   (org-element-property :value (org-element-at-point))
 )
 
-(defun float-make-post (url data &optional headers)
-  (add-to-list 'headers `("Content-Type" . "application/json"))
-  (add-to-list 'headers `("Accept" . "application/json"))
-  (add-to-list 'headers org-clock-float-api-auth-header)
-  (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
+(defun float-make-post (url data &optional headers success error complete)
   (request
     url
     :type "POST"
     :data (json-encode data)
-    :headers headers
+    :headers (org-clock-float--build-headers headers)
     :parser 'json-read
-    )
-  )
+    :success (or success (lambda (&rest _) (message "org-clock-float: POST success")))
+    :error (or error (lambda (&rest args &key error-thrown &allow-other-keys)
+                       (message "org-clock-float: POST error %S" error-thrown)))
+    :complete (or complete (lambda (&rest _) (ignore)))))
 
 
 (defvar float--people-cache nil "Cache for storing people data as an alist.")
 
 
-(defun float-get-people (&optional headers)
-  "Get all people from the Float API and return as an alist."
-  (add-to-list 'headers org-clock-float-api-auth-header)
-  (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
-  (let ((response (request-response-data
-                   (request
-                    (concat org-clock-float-api-base-url "people")
-                    :type "GET"
-                    :sync t
-                    :parser 'json-read
-                    :headers headers))))
-    ;; Convert JSON response to alist
-    (mapcar (lambda (person)
-              (cons (cdr (assoc 'email person)) person))
-            response)))
+(defun float-get-people-async (callback &optional headers error-callback)
+  "Asynchronously fetch people and pass alist to CALLBACK.
+If cached, invoke CALLBACK immediately. ERROR-CALLBACK called on failure."
+  (if float--people-cache
+      (funcall callback float--people-cache)
+    (request
+      (concat org-clock-float-api-base-url "people")
+      :type "GET"
+      :headers (org-clock-float--build-headers headers)
+      :parser 'json-read
+      :success (cl-function
+                (lambda (&key data &allow-other-keys)
+                  (let ((alist (mapcar (lambda (person)
+                                         (cons (cdr (assoc 'email person)) person))
+                                       data)))
+                    (setq float--people-cache alist)
+                    (funcall callback alist))))
+      :error (cl-function
+              (lambda (&rest args &key error-thrown &allow-other-keys)
+                (when error-callback
+                  (funcall error-callback error-thrown)))))))
 
 
-(defun float-get-person (email &optional headers)
-  "Get information about a person based on their email, using cached data."
-  (if (and float--people-cache
-           (assoc email float--people-cache))
-      ;; Return cached person if available
-      (assoc email float--people-cache)
-    ;; Fetch and cache people if not available
-    (setq float--people-cache (float-get-people headers))
-    (assoc email float--people-cache)))
+(defun float-get-person-async (email callback &optional headers error-callback)
+  "Asynchronously get a person by EMAIL, using cache. CALLBACK receives cons entry."
+  (let ((maybe-return (when (and float--people-cache (assoc email float--people-cache))
+                        (assoc email float--people-cache))))
+    (if maybe-return
+        (funcall callback maybe-return)
+      (float-get-people-async
+       (lambda (alist)
+         (funcall callback (assoc email alist)))
+       headers
+       error-callback))))
 
 
 (defvar float--projects-cache nil "Cache for storing projects data as an alist.")
 
 
-(defun float-get-projects (&optional headers)
-  "Get all projects from the Float API and return as an alist, with caching."
-  ;; Fetch data from API if cache is empty
-  (add-to-list 'headers org-clock-float-api-auth-header)
-  (add-to-list 'headers `("User-Agent" . ,(concat "Emacs " org-clock-float-email)))
-  (let ((response (request-response-data
-				   (request
-					 (concat org-clock-float-api-base-url "projects")
-					 :type "GET"
-					 :sync t
-					 :parser 'json-read
-					 :headers headers))))
-	;; Convert JSON response to alist
-	(let ((alist (mapcar (lambda (project)
-						   (cons (cdr (assoc 'name project)) project))
-						 response)))
-	  ;; Cache the alist
-	  (setq float--projects-cache alist)
-	  alist)))
+(defun float-get-projects-async (callback &optional headers error-callback)
+  "Asynchronously fetch projects and pass alist to CALLBACK.
+If cached, invoke CALLBACK immediately."
+  (if float--projects-cache
+      (funcall callback float--projects-cache)
+    (request
+      (concat org-clock-float-api-base-url "projects")
+      :type "GET"
+      :headers (org-clock-float--build-headers headers)
+      :parser 'json-read
+      :success (cl-function
+                (lambda (&key data &allow-other-keys)
+                  (let ((alist (mapcar (lambda (project)
+                                         (cons (cdr (assoc 'name project)) project))
+                                       data)))
+                    (setq float--projects-cache alist)
+                    (funcall callback alist))))
+      :error (cl-function
+              (lambda (&rest args &key error-thrown &allow-other-keys)
+                (when error-callback
+                  (funcall error-callback error-thrown)))))))
 
-
-(defun float-get-project (project_name &optional headers)
-  "Get information about a project based on its name, using cached data."
-  (if (and float--projects-cache
-           (assoc project_name float--projects-cache))
-      ;; Return cached project if available
-      (assoc project_name float--projects-cache)
-    ;; Fetch and cache projects if not available
-    (setq float--projects-cache (float-get-projects headers))
-    (assoc project_name float--projects-cache)))
+(defun float-get-project-async (project_name callback &optional headers error-callback)
+  "Asynchronously get a project by PROJECT_NAME, using cache."
+  (let ((maybe-return (when (and float--projects-cache (assoc project_name float--projects-cache))
+                        (assoc project_name float--projects-cache))))
+    (if maybe-return
+        (funcall callback maybe-return)
+      (float-get-projects-async
+       (lambda (alist)
+         (funcall callback (assoc project_name alist)))
+       headers
+       error-callback))))
 
 
 (defun org-clock-float-post-task ()
-  "clock out post the clock to Float."
+  "clock out post the clock to Float.
+
+This function performs an asynchronous sequence:
+1. Validate and extract the Float project tag from the current Org entry.
+2. Resolve the current user (people_id) from Float via email (cached).
+3. Resolve the project (project_id) from Float via tag-derived name (cached).
+4. POST the logged time to Float.
+
+Each network step is non-blocking and handled via callbacks.
+Errors at any step are surfaced via `message`."
   (interactive)
+  ;; Gather local context for the log entry (no network here).
   (let* ((tags (org-get-tags))
          (title (org-entry-get nil "ITEM"))
          (clocked-time (org-clock-float--get-last-clock-duration))
          (clocked-timestamp (org-clock-float--get-last-clock-timestamp))
          (todays-date (org-timestamp-format clocked-timestamp "%Y-%m-%d" t))
-         (people_id (cdr (assoc 'people_id (float-get-person org-clock-float-email))))
          (float-tags (cl-remove-if-not (lambda (ele) (string-match "float_" ele)) tags))
-         (project_name (string-replace "_" " " (elt (split-string (elt float-tags 0) "float_") 1)))
-         (project_id (cdr (assoc 'project_id (float-get-project project_name))))
          )
-
-    (float-make-post
-     (concat org-clock-float-api-base-url "logged-time")
-     `(("people_id" . ,people_id)
-       ("date" . ,todays-date)
-       ("hours" . ,clocked-time)
-       ("project_id" . ,project_id)
-       ("task_name" . ,title)))
-    )
-  )
+    ;; Step 1: Validate presence of a Float project tag and derive project name.
+    (if (null float-tags)
+        (message "org-clock-float: no float_ tag found on task; skipping post")
+      (let* ((project-name (string-replace "_" " " (elt (split-string (elt float-tags 0) "float_") 1))))
+        ;; Step 2: Resolve person (people_id) asynchronously using cached directory.
+        (float-get-person-async
+         org-clock-float-email
+         (lambda (person)
+           (let ((people-id (cdr (assoc 'people_id person))))
+             (if (null people-id)
+                 (message "org-clock-float: could not resolve person id for %s" org-clock-float-email)
+               ;; Step 3: Resolve project (project_id) asynchronously using cached list.
+               (float-get-project-async
+                project-name
+                (lambda (project)
+                  (let ((project-id (cdr (assoc 'project_id project))))
+                    (if (null project-id)
+                        (message "org-clock-float: could not resolve project id for %s" project-name)
+                      ;; Step 4: POST the time entry asynchronously to Float.
+                      (float-make-post
+                       (concat org-clock-float-api-base-url "logged-time")
+                       `(("people_id" . ,people-id)
+                         ("date" . ,todays-date)
+                         ("hours" . ,clocked-time)
+                         ("project_id" . ,project-id)
+                         ("task_name" . ,title))
+                       nil
+                       ;; Success callback for POST
+                       (cl-function (lambda (&key data &allow-other-keys)
+                                     (message "org-clock-float: logged %.2fh to %s" clocked-time project-name)))
+                       ;; Error callback for POST
+                       (cl-function (lambda (&rest _ &key error-thrown &allow-other-keys)
+                                     (message "org-clock-float: failed to post time: %S" error-thrown))))))
+                 nil
+                 ;; Error callback for project lookup
+                 (lambda (_err)
+                   (message "org-clock-float: project lookup failed for %s" project-name))))))
+          nil
+          ;; Error callback for people lookup
+          (lambda (_err)
+            (message "org-clock-float: people lookup failed for %s" org-clock-float-email))))))))
 
 
 (defun org-clock-float-setup ()
