@@ -180,6 +180,66 @@ refer to the project's `name'."
          error-callback)))))
 
 
+(defun float-get-active-phase-for-project-async (project-id callback &optional headers error-callback)
+  "Asynchronously get the single active phase for PROJECT-ID.
+
+CALLBACK is called with either the active phase alist (when exactly
+one active phase is found) or nil (when no active phases exist).
+
+If more than one active phase is returned from the API, this is
+treated as an error condition: a message is emitted and
+ERROR-CALLBACK (if non-nil) is invoked. In that case, CALLBACK is
+*not* called."
+  (request
+    (concat org-clock-float-api-base-url "phases")
+    :type "GET"
+    :params `(("project_id" . ,project-id)
+              ("active" . "1"))
+    :headers (org-clock-float--build-headers headers)
+    :parser 'json-read
+    :success (cl-function
+              (lambda (&key data &allow-other-keys)
+                ;; Normalise DATA into a plain list of phase alists.
+                (let* ((phases
+                        (mapcar (lambda (phase)
+                                  (cond
+                                   ;; Common case: a single-element vector wrapping the alist
+                                   ((and (vectorp phase)
+                                         (= (length phase) 1)
+                                         (listp (aref phase 0)))
+                                    (aref phase 0))
+                                   ;; Already an alist
+                                   ((listp phase) phase)
+                                   ;; Fallback: return as-is
+                                   (t phase)))
+                                (append data nil)))
+                       (active-phases
+                        (cl-remove-if-not
+                         (lambda (phase)
+                           (let ((active (cdr (assoc 'active phase))))
+                             (eq active 1)))
+                         phases))
+                       (count (length active-phases)))
+                  (cond
+                   ((= count 0)
+                    ;; No active phases: just report nil to the caller.
+                    (funcall callback nil))
+                   ((= count 1)
+                    ;; Exactly one active phase: already normalised above.
+                    (funcall callback (car active-phases)))
+                   (t
+                    ;; More than one active phase: error.
+                    (message "org-clock-float: multiple active phases found for project_id %s; not logging time" project-id)
+                    (when error-callback
+                      (funcall error-callback
+                               (format "multiple active phases for project_id %s" project-id))))))))
+    :error (cl-function
+            (lambda (&rest _ &key error-thrown &allow-other-keys)
+              (message "org-clock-float: failed to fetch phases for project_id %s: %S" project-id error-thrown)
+              (when error-callback
+                (funcall error-callback error-thrown))))))
+
+
 (defun float-get-project-by-code-async (project-code callback &optional headers error-callback)
   "Asynchronously get a project by PROJECT-CODE, using cache.
 
@@ -211,7 +271,8 @@ This function performs an asynchronous sequence:
 2. Resolve the current user (people_id) from Float via email (cached).
 3. Resolve the project (project_id) from Float via tag-derived identifier
    (either project name via `float_' tags or project_code via `floatid_' tags).
-4. POST the logged time to Float.
+4. Resolve the single active phase for the project, if any.
+5. POST the logged time to Float, optionally associated with that phase.
 
 Each network step is non-blocking and handled via callbacks.
 Errors at any step are surfaced via `message`."
@@ -256,21 +317,42 @@ Errors at any step are surfaced via `message`."
                   (let ((project-id (cdr (assoc 'project_id project))))
                     (if (null project-id)
                         (message "org-clock-float: could not resolve project id for %s" project-identifier)
-                      ;; Step 4: POST the time entry asynchronously to Float.
-                      (float-make-post
-                       (concat org-clock-float-api-base-url "logged-time")
-                       `(("people_id" . ,people-id)
-                         ("date" . ,todays-date)
-                         ("hours" . ,clocked-time)
-                         ("project_id" . ,project-id)
-                         ("task_name" . ,title))
-                       nil
-                       ;; Success callback for POST
-                       (cl-function (lambda (&key data &allow-other-keys)
-                                     (message "org-clock-float: logged %.2fh to %s" clocked-time project-identifier)))
-                       ;; Error callback for POST
-                       (cl-function (lambda (&rest _ &key error-thrown &allow-other-keys)
-                                     (message "org-clock-float: failed to post time: %S" error-thrown)))))))
+                      ;; Step 4: Resolve the active phase (if any) for this project.
+                      (float-get-active-phase-for-project-async
+                       project-id
+                       (lambda (phase)
+                         (let* ((phase-id (and phase (cdr (assoc 'phase_id phase)))))
+                           (message "org-clock-float: phase lookup for project_id %s returned phase_id=%S, raw=%S"
+                                    project-id phase-id phase)
+                           (let* ((payload
+                                   `(("people_id" . ,people-id)
+                                     ("date" . ,todays-date)
+                                     ("hours" . ,clocked-time)
+                                     ("project_id" . ,project-id)
+                                     ("task_name" . ,title)
+                                     ,@(when phase-id
+                                         `(("phase_id" . ,phase-id))))))
+                             ;; Step 5: POST the time entry asynchronously to Float.
+                             (float-make-post
+                              (concat org-clock-float-api-base-url "logged-time")
+                              payload
+                              nil
+                              ;; Success callback for POST
+                              (cl-function
+                               (lambda (&key data &allow-other-keys)
+                                 (if phase-id
+                                     (message "org-clock-float: logged %.2fh to %s (phase id %s)"
+                                              clocked-time project-identifier phase-id)
+                                   (message "org-clock-float: logged %.2fh to %s (no active phase)"
+                                            clocked-time project-identifier))))
+                              ;; Error callback for POST
+                              (cl-function
+                               (lambda (&rest _ &key error-thrown &allow-other-keys)
+                                 (message "org-clock-float: failed to post time: %S" error-thrown)))))))
+                       ;; Error callback for phase lookup
+                       (lambda (_err)
+                         (message "org-clock-float: phase lookup failed for project_id %s; not logging time"
+                                  project-id))))))
                 nil
                 ;; Error callback for project lookup
                 (lambda (_err)
