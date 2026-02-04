@@ -5,8 +5,8 @@
 
 ;; Author: Stuart Mumford <stuart@cadair.com>
 ;; Keywords: org, clocking, float
-;; Version: 1.0
-;; Package-Requires: ((emacs "26.1") (request "0.3.2"))
+;; Version: 1.1
+;; Package-Requires: ((emacs "26.1") (request "0.3.2") (org "9"))
 ;; URL: https://github.com/Cadair/org-clock-float/
 
 ;; This program is free software; you can redistribute it and/or modify
@@ -135,7 +135,10 @@ If cached, invoke CALLBACK immediately. ERROR-CALLBACK called on failure."
 
 (defun float-get-projects-async (callback &optional headers error-callback)
   "Asynchronously fetch projects and pass alist to CALLBACK.
-If cached, invoke CALLBACK immediately."
+If cached, invoke CALLBACK immediately.
+
+The CALLBACK is called with a list of project alists as returned by
+the Float API."
   (if float--projects-cache
       (funcall callback float--projects-cache)
     (request
@@ -145,27 +148,59 @@ If cached, invoke CALLBACK immediately."
       :parser 'json-read
       :success (cl-function
                 (lambda (&key data &allow-other-keys)
-                  (let ((alist (mapcar (lambda (project)
-                                         (cons (cdr (assoc 'name project)) project))
-                                       data)))
-                    (setq float--projects-cache alist)
-                    (funcall callback alist))))
+                  ;; Cache the raw project objects so we can look them up
+                  ;; by different keys (name, project_code, project_id).
+                  (setq float--projects-cache data)
+                  (funcall callback data)))
       :error (cl-function
               (lambda (&rest args &key error-thrown &allow-other-keys)
                 (when error-callback
                   (funcall error-callback error-thrown)))))))
 
-(defun float-get-project-async (project_name callback &optional headers error-callback)
-  "Asynchronously get a project by PROJECT_NAME, using cache."
-  (let ((maybe-return (when (and float--projects-cache (assoc project_name float--projects-cache))
-                        (assoc project_name float--projects-cache))))
-    (if maybe-return
-        (funcall callback maybe-return)
-      (float-get-projects-async
-       (lambda (alist)
-         (funcall callback (assoc project_name alist)))
-       headers
-       error-callback))))
+(defun float-get-project-by-name-async (project-name callback &optional headers error-callback)
+  "Asynchronously get a project by PROJECT-NAME, using cache.
+
+This preserves the legacy behaviour used by `float_' tags, which
+refer to the project's `name'."
+  (let* ((find-project
+          (lambda (projects)
+            (cl-find-if
+             (lambda (project)
+               (let ((name (cdr (assoc 'name project))))
+                 (and name (string= name project-name))))
+             projects))))
+    (let ((maybe-return (when float--projects-cache
+                          (funcall find-project float--projects-cache))))
+      (if maybe-return
+          (funcall callback maybe-return)
+        (float-get-projects-async
+         (lambda (projects)
+           (funcall callback (funcall find-project projects)))
+         headers
+         error-callback)))))
+
+
+(defun float-get-project-by-code-async (project-code callback &optional headers error-callback)
+  "Asynchronously get a project by PROJECT-CODE, using cache.
+
+This is intended for use with `floatid_' tags, which refer to the
+project's `project_code' in Float."
+  (let* ((find-project
+          (lambda (projects)
+            (cl-find-if
+             (lambda (project)
+               (let ((code (cdr (assoc 'project_code project))))
+                 (and code (string= code project-code))))
+             projects))))
+    (let ((maybe-return (when float--projects-cache
+                          (funcall find-project float--projects-cache))))
+      (if maybe-return
+          (funcall callback maybe-return)
+        (float-get-projects-async
+         (lambda (projects)
+           (funcall callback (funcall find-project projects)))
+         headers
+         error-callback)))))
 
 
 (defun org-clock-float-post-task ()
@@ -174,7 +209,8 @@ If cached, invoke CALLBACK immediately."
 This function performs an asynchronous sequence:
 1. Validate and extract the Float project tag from the current Org entry.
 2. Resolve the current user (people_id) from Float via email (cached).
-3. Resolve the project (project_id) from Float via tag-derived name (cached).
+3. Resolve the project (project_id) from Float via tag-derived identifier
+   (either project name via `float_' tags or project_code via `floatid_' tags).
 4. POST the logged time to Float.
 
 Each network step is non-blocking and handled via callbacks.
@@ -186,12 +222,23 @@ Errors at any step are surfaced via `message`."
          (clocked-time (org-clock-float--get-last-clock-duration))
          (clocked-timestamp (org-clock-float--get-last-clock-timestamp))
          (todays-date (org-timestamp-format clocked-timestamp "%Y-%m-%d" t))
-         (float-tags (cl-remove-if-not (lambda (ele) (string-match "float_" ele)) tags))
-         )
-    ;; Step 1: Validate presence of a Float project tag and derive project name.
-    (if (null float-tags)
-        (message "org-clock-float: no float_ tag found on task; skipping post")
-      (let* ((project-name (string-replace "_" " " (elt (split-string (elt float-tags 0) "float_") 1))))
+         (float-name-tags (cl-remove-if-not (lambda (ele) (string-prefix-p "float_" ele)) tags))
+         (float-id-tags (cl-remove-if-not (lambda (ele) (string-prefix-p "floatid_" ele)) tags)))
+    ;; Step 1: Validate presence of a Float project tag and derive project identifier.
+    ;; Prefer `floatid_' tags (by project_code / project_id) when present,
+    ;; but keep supporting legacy `float_' tags which match project names.
+    (if (and (null float-name-tags) (null float-id-tags))
+        (message "org-clock-float: no float_ or floatid_ tag found on task; skipping post")
+      (let* ((using-id-tag (not (null float-id-tags)))
+             (raw-tag (if using-id-tag
+                          (car float-id-tags)
+                        (car float-name-tags)))
+             (project-identifier
+              (if using-id-tag
+                  ;; `floatid_' tags: use the remainder verbatim as project_code.
+                  (substring raw-tag (length "floatid_"))
+                ;; Legacy `float_' tags: underscores represent spaces in the project name.
+                (string-replace "_" " " (substring raw-tag (length "float_"))))))
         ;; Step 2: Resolve person (people_id) asynchronously using cached directory.
         (float-get-person-async
          org-clock-float-email
@@ -200,12 +247,15 @@ Errors at any step are surfaced via `message`."
              (if (null people-id)
                  (message "org-clock-float: could not resolve person id for %s" org-clock-float-email)
                ;; Step 3: Resolve project (project_id) asynchronously using cached list.
-               (float-get-project-async
-                project-name
+               (funcall
+                (if using-id-tag
+                    #'float-get-project-by-code-async
+                  #'float-get-project-by-name-async)
+                project-identifier
                 (lambda (project)
                   (let ((project-id (cdr (assoc 'project_id project))))
                     (if (null project-id)
-                        (message "org-clock-float: could not resolve project id for %s" project-name)
+                        (message "org-clock-float: could not resolve project id for %s" project-identifier)
                       ;; Step 4: POST the time entry asynchronously to Float.
                       (float-make-post
                        (concat org-clock-float-api-base-url "logged-time")
@@ -217,18 +267,18 @@ Errors at any step are surfaced via `message`."
                        nil
                        ;; Success callback for POST
                        (cl-function (lambda (&key data &allow-other-keys)
-                                     (message "org-clock-float: logged %.2fh to %s" clocked-time project-name)))
+                                     (message "org-clock-float: logged %.2fh to %s" clocked-time project-identifier)))
                        ;; Error callback for POST
                        (cl-function (lambda (&rest _ &key error-thrown &allow-other-keys)
-                                     (message "org-clock-float: failed to post time: %S" error-thrown))))))
-                 nil
-                 ;; Error callback for project lookup
-                 (lambda (_err)
-                   (message "org-clock-float: project lookup failed for %s" project-name))))))
-          nil
-          ;; Error callback for people lookup
-          (lambda (_err)
-            (message "org-clock-float: people lookup failed for %s" org-clock-float-email))))))))
+                                     (message "org-clock-float: failed to post time: %S" error-thrown)))))))
+                nil
+                ;; Error callback for project lookup
+                (lambda (_err)
+                  (message "org-clock-float: project lookup failed for %s" project-identifier))))))
+         nil
+         ;; Error callback for people lookup
+         (lambda (_err)
+           (message "org-clock-float: people lookup failed for %s" org-clock-float-email)))))))
 
 
 (defun org-clock-float-setup ()
