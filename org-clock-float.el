@@ -31,6 +31,7 @@
 (require 'request)
 (require 'json)
 (require 'org-clock)
+(require 'org-element)
 (require 'cl-lib)
 
 (defgroup org-clock-float nil
@@ -55,7 +56,7 @@
 
 (defcustom org-clock-float-api-auth-header `("Authorization" . ,(concat "Bearer " org-clock-float-api-token))
   "Float Auth Header"
-  :type 'list
+  :type '(cons string string)
   :group 'org-clock-float)
 
 (defun org-clock-float--build-headers (&optional extra-headers)
@@ -86,8 +87,8 @@
     :headers (org-clock-float--build-headers headers)
     :parser 'json-read
     :success (or success (lambda (&rest _) (message "org-clock-float: POST success")))
-    :error (or error (lambda (&rest args &key error-thrown &allow-other-keys)
-                       (message "org-clock-float: POST error %S" error-thrown)))
+    :error (or error (cl-function (lambda (&rest args &key error-thrown &allow-other-keys)
+                                 (message "org-clock-float: POST error %S" error-thrown))))
     :complete (or complete (lambda (&rest _) (ignore)))))
 
 
@@ -234,10 +235,10 @@ ERROR-CALLBACK (if non-nil) is invoked. In that case, CALLBACK is
                       (funcall error-callback
                                (format "multiple active phases for project_id %s" project-id))))))))
     :error (cl-function
-            (lambda (&rest _ &key error-thrown &allow-other-keys)
+            (lambda (&key error-thrown &allow-other-keys)
               (message "org-clock-float: failed to fetch phases for project_id %s: %S" project-id error-thrown)
               (when error-callback
-                (funcall error-callback error-thrown))))))
+                (funcall error-thrown))))))
 
 
 (defun float-get-project-by-code-async (project-code callback &optional headers error-callback)
@@ -282,7 +283,7 @@ Errors at any step are surfaced via `message`."
          (title (org-entry-get nil "ITEM"))
          (clocked-time (org-clock-float--get-last-clock-duration))
          (clocked-timestamp (org-clock-float--get-last-clock-timestamp))
-         (todays-date (org-timestamp-format clocked-timestamp "%Y-%m-%d" t))
+         (todays-date (org-format-timestamp clocked-timestamp "%Y-%m-%d" t))
          (float-name-tags (cl-remove-if-not (lambda (ele) (string-prefix-p "float_" ele)) tags))
          (float-id-tags (cl-remove-if-not (lambda (ele) (string-prefix-p "floatid_" ele)) tags)))
     ;; Step 1: Validate presence of a Float project tag and derive project identifier.
@@ -337,18 +338,18 @@ Errors at any step are surfaced via `message`."
                               (concat org-clock-float-api-base-url "logged-time")
                               payload
                               nil
-                              ;; Success callback for POST
-                              (cl-function
-                               (lambda (&key data &allow-other-keys)
+;; Success callback for POST
+                               (cl-function
+                                (lambda (&key _data &allow-other-keys)
                                  (if phase-id
                                      (message "org-clock-float: logged %.2fh to %s (phase id %s)"
                                               clocked-time project-identifier phase-id)
                                    (message "org-clock-float: logged %.2fh to %s (no active phase)"
                                             clocked-time project-identifier))))
-                              ;; Error callback for POST
-                              (cl-function
-                               (lambda (&rest _ &key error-thrown &allow-other-keys)
-                                 (message "org-clock-float: failed to post time: %S" error-thrown)))))))
+;; Error callback for POST
+                               (cl-function
+                                (lambda (&key error-thrown &allow-other-keys)
+                                  (message "org-clock-float: failed to post time: %S" error-thrown)))))))
                        ;; Error callback for phase lookup
                        (lambda (_err)
                          (message "org-clock-float: phase lookup failed for project_id %s; not logging time"
