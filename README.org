@@ -10,6 +10,8 @@ To configure upload to float you need to set your email and an API token, unfort
 (use-package org-clock-float
   :requires (request)
   :vc (:url "https://github.com/Cadair/org-clock-float.git" :rev :latest)  ;; this requires emacs 30
+  :config
+  (org-clock-float-setup)
   :custom
   (org-clock-float-email "youremail@example.com")
   (org-clock-float-api-token "aslkdjaslkjdlakjdlksa")
@@ -22,10 +24,16 @@ You might want to use [[https://www.gnu.org/software/emacs/manual/html_node/auth
 #+end_src
 ** Tagging Tasks
 
-Only tasks tagged with a matching tag are uploaded to float. The format of the tag is ~float_<project name>~, so if you have a project in float named "client1" you would have a task which looks like this:
+Only tasks tagged with a matching tag are uploaded to float. The format of the tag is ~float_<project name>~ or ~floatid_<project code>~ so if you have a project in float named "client1" you would have a task which looks like this:
 
 #+begin_src org
   * TODO Work on thing :float_client1:
 #+end_src
 
 Any spaces in the project name should be replaced with ~_~, so a project named ~My Client~ would use a tag ~:float_My_Client:~.
+
+of if you have a project with a long name and a code of 314 you would have this:
+
+#+begin_src org
+  * TODO Work on thing :floatid_134:
+#+end_src
