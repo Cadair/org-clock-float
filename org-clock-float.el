@@ -181,16 +181,26 @@ refer to the project's `name'."
          error-callback)))))
 
 
-(defun float-get-active-phase-for-project-async (project-id callback &optional headers error-callback)
-  "Asynchronously get the single active phase for PROJECT-ID.
+(defun float-get-active-phase-for-project-async (project-id clock-date callback &optional headers error-callback)
+  "Asynchronously get the active phase for PROJECT-ID matching CLOCK-DATE.
 
-CALLBACK is called with either the active phase alist (when exactly
-one active phase is found) or nil (when no active phases exist).
+CLOCK-DATE is a YYYY-MM-DD string, the date of the clock being logged,
+used to disambiguate between multiple active phases on the project.
 
-If more than one active phase is returned from the API, this is
-treated as an error condition: a message is emitted and
-ERROR-CALLBACK (if non-nil) is invoked. In that case, CALLBACK is
-*not* called."
+CALLBACK is called with a phase alist when:
+- exactly one active phase exists for the project (returned directly,
+  without date filtering); or
+- multiple active phases exist and exactly one has a [start_date,
+  end_date] range containing CLOCK-DATE.
+
+CALLBACK is called with nil when:
+- no active phases exist;
+- multiple active phases exist but none contains CLOCK-DATE; or
+- multiple active phases exist and more than one contains CLOCK-DATE
+  (ambiguous overlap, so no phase is selected).
+
+ERROR-CALLBACK (if non-nil) is invoked on transport errors; in that
+case CALLBACK is not called."
   (request
     (concat org-clock-float-api-base-url "phases")
     :type "GET"
@@ -221,19 +231,37 @@ ERROR-CALLBACK (if non-nil) is invoked. In that case, CALLBACK is
                              (eq active 1)))
                          phases))
                        (count (length active-phases)))
-                  (cond
-                   ((= count 0)
-                    ;; No active phases: just report nil to the caller.
-                    (funcall callback nil))
-                   ((= count 1)
-                    ;; Exactly one active phase: already normalised above.
-                    (funcall callback (car active-phases)))
-                   (t
-                    ;; More than one active phase: error.
-                    (message "org-clock-float: multiple active phases found for project_id %s; not logging time" project-id)
-                    (when error-callback
-                      (funcall error-callback
-                               (format "multiple active phases for project_id %s" project-id))))))))
+                   (cond
+                    ((= count 0)
+                     ;; No active phases: just report nil to the caller.
+                     (funcall callback nil))
+                    ((= count 1)
+                     ;; Exactly one active phase: already normalised above.
+                     (funcall callback (car active-phases)))
+                    (t
+                     ;; Multiple active phases: pick the one whose
+                     ;; [start_date, end_date] range contains CLOCK-DATE.
+                     (let* ((matching
+                             (cl-remove-if-not
+                              (lambda (phase)
+                                (let ((start (cdr (assoc 'start_date phase)))
+                                      (end (cdr (assoc 'end_date phase))))
+                                  (and start end
+                                       (not (string< clock-date start))
+                                       (not (string< end clock-date)))))
+                              active-phases))
+                            (match-count (length matching)))
+                       (cond
+                        ((= match-count 1)
+                         (funcall callback (car matching)))
+                        ((= match-count 0)
+                         (message "org-clock-float: no active phase for project_id %s contains clock date %s"
+                                  project-id clock-date)
+                         (funcall callback nil))
+                        (t
+                         (message "org-clock-float: multiple active phases for project_id %s contain clock date %s; logging without phase"
+                                  project-id clock-date)
+                         (funcall callback nil)))))))))
     :error (cl-function
             (lambda (&key error-thrown &allow-other-keys)
               (message "org-clock-float: failed to fetch phases for project_id %s: %S" project-id error-thrown)
@@ -272,7 +300,8 @@ This function performs an asynchronous sequence:
 2. Resolve the current user (people_id) from Float via email (cached).
 3. Resolve the project (project_id) from Float via tag-derived identifier
    (either project name via `float_' tags or project_code via `floatid_' tags).
-4. Resolve the single active phase for the project, if any.
+4. Resolve the active phase for the project whose date range contains
+   the clock date, if any.
 5. POST the logged time to Float, optionally associated with that phase.
 
 Each network step is non-blocking and handled via callbacks.
@@ -318,10 +347,12 @@ Errors at any step are surfaced via `message`."
                   (let ((project-id (cdr (assoc 'project_id project))))
                     (if (null project-id)
                         (message "org-clock-float: could not resolve project id for %s" project-identifier)
-                      ;; Step 4: Resolve the active phase (if any) for this project.
-                      (float-get-active-phase-for-project-async
-                       project-id
-                       (lambda (phase)
+                       ;; Step 4: Resolve the active phase (if any) for this project,
+                       ;; matching by clock date when multiple are active.
+                       (float-get-active-phase-for-project-async
+                        project-id
+                        todays-date
+                        (lambda (phase)
                          (let* ((phase-id (and phase (cdr (assoc 'phase_id phase)))))
                            (message "org-clock-float: phase lookup for project_id %s returned phase_id=%S, raw=%S"
                                     project-id phase-id phase)
