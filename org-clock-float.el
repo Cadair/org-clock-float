@@ -59,14 +59,30 @@
   :type '(cons string string)
   :group 'org-clock-float)
 
+(defun org-clock-float--auth-source ()
+  "Return (USER . TOKEN) from auth-source."
+  (let* ((entry  (car (auth-source-search :max 1 :host "api.float.com")))
+         (secret (plist-get entry :secret)))
+    (cons (plist-get entry :user)
+          (if (functionp secret) (funcall secret) secret))))
+
 (defun org-clock-float--build-headers (&optional extra-headers)
   "Construct default headers merged with EXTRA-HEADERS without mutating inputs."
-  (let* ((base (list (cons "Content-Type" "application/json")
-                     (cons "Accept" "application/json")
-                     (cons "User-Agent" (concat "Emacs " org-clock-float-email))
-                     (cons (car org-clock-float-api-auth-header)
-                           (concat "Bearer " org-clock-float-api-token)))))
-    (append base extra-headers)))
+  (let* ((auth  (org-clock-float--auth-source))
+         (email (or (and (stringp org-clock-float-email)
+                         (> (length org-clock-float-email) 0)
+                         org-clock-float-email)
+                    (car auth)))
+         (token (or (and (stringp org-clock-float-api-token)
+                         (> (length org-clock-float-api-token) 0)
+                         org-clock-float-api-token)
+                    (cdr auth))))
+    (append
+     (list (cons "Content-Type" "application/json")
+           (cons "Accept" "application/json")
+           (cons "User-Agent" (concat "Emacs " email))
+           (cons "Authorization" (concat "Bearer " token)))
+     extra-headers)))
 
 ;; Float Integration
 (defun org-clock-float--get-last-clock-duration ()

@@ -18,10 +18,8 @@ To configure upload to float you need to set your email and an API token, unfort
   )
 #+end_src
 
-You might want to use [[https://www.gnu.org/software/emacs/manual/html_node/auth/index.html][auth-source]] to store the token, in which case you can use something like this:
-#+begin_src emacs-lisp
-(org-clock-float-api-token (auth-info-password (nth 0 (auth-source-search :max 1 :host "api.float.com"))))
-#+end_src
+You might want to use [[https://www.gnu.org/software/emacs/manual/html_node/auth/index.html][auth-source]] to store the token, in which case ensure that there is a record matching the host "api.float.com" which defines both the API token and the user.
+With this in place, you do not need to set ~org-clock-float-email~ or ~org-clock-float-api-token~ as these will be looked up via auth-source if not defined.
 ** Tagging Tasks
 
 Only tasks tagged with a matching tag are uploaded to float. The format of the tag is ~float_<project name>~ or ~floatid_<project code>~ so if you have a project in float named "client1" you would have a task which looks like this:
